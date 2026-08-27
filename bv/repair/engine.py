@@ -48,6 +48,10 @@ class RepairReport:
     attempts: list[RepairAttempt] = field(default_factory=list)
     final_diagnostics: list[Diagnostic] = field(default_factory=list)
     aborted_reason: str = ""
+    # P0 9: SHA256 of the final repaired content. Downstream callers
+    # (the executor) use this to verify the post-repair hash matches
+    # what they actually run.
+    final_content_sha256: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -91,6 +95,10 @@ class RepairEngine:
             return self.report
 
         initial_diagnostics = self._flatten(layer_results)
+        # P0 9: capture the content SHA256 BEFORE any repair, so we
+        # can later assert the post-repair content is actually different
+        # (a no-op repair must not be reported as self_healed).
+        script_before_repair_hash = script.content_sha256
         # If no diagnostics above threshold, nothing to repair
         threshold = Severity(self.config.verify.severity_threshold)
         # P0 5 fix: use the ordinal map; never compare severity strings.
@@ -160,10 +168,25 @@ class RepairEngine:
             self.report.total_attempts = attempt
 
             if not new_blocking:
-                # All blocking diagnostics gone — persist if path-based
+                # All blocking diagnostics gone. P0 9: a repair is
+                # only successful if the post-repair content SHA256
+                # actually differs from the pre-repair SHA256. A
+                # strategy that produced identical bytes must not be
+                # reported as self_healed.
+                pre_hash = script_before_repair_hash
+                post_hash = script.content_sha256
+                if pre_hash == post_hash:
+                    self.report.aborted_reason = (
+                        "repair strategy produced no content change"
+                    )
+                    self.report.final_diagnostics = new_blocking
+                    return self.report
                 if script.path:
                     script.update(script.content)
                 self.report.final_diagnostics = new_diagnostics
+                # P0 9: capture the post-repair hash so the executor
+                # can verify the post-repair hash matches what it runs.
+                self.report.final_content_sha256 = post_hash
                 self.report.self_healed = True
                 return self.report
 
