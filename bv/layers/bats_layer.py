@@ -80,26 +80,29 @@ class BatsLayer(Layer):
                 # (bash:5.1 may not have bats; the layer will skip
                 # INCOMPLETE if bats is missing in the image, which
                 # is the correct P0 8 behavior).
+                # P0-2 (round 2): use base64 to stage arbitrary source.
+                # Base64 is shell-safe ([A-Za-z0-9+/=]) and avoids
+                # any parser collision with the target's content.
+                # The marker is a random hex string (no chance of
+                # appearing in user content).
                 wrapper = "#!/usr/bin/env bash\n"
-                wrapper += "cd /work\n"
-                wrapper += "which bats >/dev/null 2>&1 || { echo BATS_MISSING_IN_SANDBOX; exit 1; }\n"
-                wrapper += "bats --tap /work/verify.bats\n"
-                # The target script and test file are in tests_dir on
-                # the host. We feed them to the container via a tiny
-                # bootstrap: stage target.sh and verify.bats into /work
-                # by writing them through stdin in a base64 tar.
-                # For simplicity, we use a single concatenated input:
-                # the bats file is invoked via /dev/stdin of bash, and
-                # the target is inlined as a heredoc inside the wrapper.
-                target_content = script.content
-                wrapper += "cat > /work/target.sh <<'__BV_HEREDOC__'\n"
-                wrapper += target_content
-                wrapper += "\n__BV_HEREDOC__\n"
-                # Write the bats test file (we already generated it)
+                wrapper += "set -u\n"
+                wrapper += "cd /work || exit 1\n"
+                wrapper += "command -v bats >/dev/null 2>&1 || "
+                wrapper += "{ echo BATS_MISSING_IN_SANDBOX; exit 1; }\n"
+                target_b64 = base64.b64encode(
+                    script.content.encode("utf-8", errors="replace")
+                ).decode("ascii")
+                wrapper += f"base64 -d > /work/target.sh <<'BV_B64_46FC252E5A654665'\n"
+                wrapper += target_b64 + "\n"
+                wrapper += f"BV_B64_46FC252E5A654665\n"
                 bats_content = tests_file.read_text(encoding="utf-8")
-                wrapper += "cat > /work/verify.bats <<'__BV_HEREDOC2__'\n"
-                wrapper += bats_content
-                wrapper += "\n__BV_HEREDOC2__\n"
+                bats_b64 = base64.b64encode(
+                    bats_content.encode("utf-8", errors="replace")
+                ).decode("ascii")
+                wrapper += f"base64 -d > /work/verify.bats <<'BV_B64_46FC252E5A654665'\n"
+                wrapper += bats_b64 + "\n"
+                wrapper += f"BV_B64_46FC252E5A654665\n"
                 wrapper += "bats --tap /work/verify.bats\n"
                 with sb.run_script(wrapper) as sr:
                     proc_stdout = sr.stdout
