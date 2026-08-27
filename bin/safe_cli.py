@@ -124,6 +124,26 @@ def cmd_run(script_path: str) -> int:
         _log("refused", "bash_verify rejected the script; NOT executing")
         return 1
 
+    # P0-6: only proceed to execution when the verification result
+    # is exactly "verified". Any other status (static_only, incomplete,
+    # failed, error) means the safe-cli pipeline did not have full
+    # coverage, and the safe execution path must refuse. This is the
+    # fail-closed model: --no-sandbox can never produce a state that
+    # would lead to execution.
+    import re as _re
+    _m = _re.search(r"^Status:\s+(\S+)", out, _re.MULTILINE)
+    _status = _m.group(1) if _m else "unknown"
+    if _status != "verified":
+        _log(
+            "refused",
+            f"verification status is {_status!r}, not 'verified'; "
+            "safe execution path refuses to run. This commonly means "
+            "the user passed --no-sandbox or a runtime layer was "
+            "skipped (e.g. Docker unavailable). The artifact is NOT "
+            "safe to run through the broker in this state.",
+        )
+        return 1
+
     # Build the verified artifact. The bytes we run are the bytes
     # we verified, SHA256-bound, executed only inside the sandbox.
     import hashlib
@@ -178,6 +198,21 @@ def cmd_exec(snippet: str) -> int:
 
         if rc != 0:
             _log("refused", "bash_verify rejected the snippet; NOT executing")
+            kept = _forensic_move(tmp_path, "refused")
+            _log("forensic", f"snippet preserved at {kept}")
+            return 1
+
+        # P0-6: only proceed when the verification result is exactly
+        # 'verified'. Anything else refuses execution.
+        import re as _re
+        _m = _re.search(r"^Status:\s+(\S+)", out, _re.MULTILINE)
+        _status = _m.group(1) if _m else "unknown"
+        if _status != "verified":
+            _log(
+                "refused",
+                f"verification status is {_status!r}, not 'verified'; "
+                "safe execution path refuses to run the snippet.",
+            )
             kept = _forensic_move(tmp_path, "refused")
             _log("forensic", f"snippet preserved at {kept}")
             return 1
