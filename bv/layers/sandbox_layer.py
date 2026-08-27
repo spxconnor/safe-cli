@@ -39,8 +39,15 @@ class SandboxLayer(Layer):
         try:
             sb = DockerSandbox(self.config)
         except Exception as e:  # noqa: BLE001
-            result.status = "skip"
-            result.notes.append(f"Docker sandbox unavailable: {e}")
+            # P0 8 fix: a skipped layer is INCOMPLETE coverage, not
+            # a pass. The safe execution path must refuse to run
+            # when the security boundary was never exercised.
+            result.status = "incomplete"
+            result.notes.append(
+                f"Docker sandbox unavailable: {e}. sandbox "
+                "coverage is INCOMPLETE; the safe execution path "
+                "must refuse to run."
+            )
             return result
 
         with self._timer():

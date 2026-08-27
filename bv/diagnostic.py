@@ -164,7 +164,7 @@ class Diagnostic:
 class LayerResult:
     """Output of one verification layer."""
     layer: str                           # layer name
-    status: str                          # "pass" | "fail" | "skip" | "error"
+    status: str                          # "pass" | "fail" | "skip" | "incomplete" | "error"
     duration_ms: int = 0
     diagnostics: list[Diagnostic] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)

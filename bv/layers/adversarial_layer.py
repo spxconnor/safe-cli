@@ -144,9 +144,16 @@ class AdversarialLayer(Layer):
 
         try:
             sb = DockerSandbox(self.config)
-        except Exception as e:
-            result.status = "skip"
-            result.notes.append(f"Docker sandbox unavailable: {e}")
+        except Exception as e:  # noqa: BLE001
+            # P0 8 fix: a skipped layer is INCOMPLETE coverage, not
+            # a pass. The safe execution path must refuse to run
+            # when the security boundary was never exercised.
+            result.status = "incomplete"
+            result.notes.append(
+                f"Docker sandbox unavailable: {e}. adversarial "
+                "coverage is INCOMPLETE; the safe execution path "
+                "must refuse to run."
+            )
             return result
 
         test_script = self._build_test_script(script, functions)

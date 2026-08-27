@@ -205,18 +205,21 @@ class Orchestrator:
 
     @staticmethod
     def _overall_status(layer_results: dict[str, LayerResult], report: VerificationReport) -> str:
-        if report.repair and report.repair.self_healed:
-            return "verified"
-        threshold = Severity(report.layers and "warning" or "warning")
-        # If any layer reports fail/error, status is failed
+        # P0 8 fix: priority is FAILED > INCOMPLETE > VERIFIED.
+        # A real error (something that ran and reported a problem) is
+        # more severe than an incomplete check (something that didn't
+        # run at all). Either way, the safe execution path refuses.
+        threshold = Severity("warning")
         for r in layer_results.values():
             if r.status in ("fail", "error"):
                 return "failed"
-        # If any layer has ERROR-severity diagnostics, failed
-        for r in layer_results.values():
             for d in r.diagnostics:
-                if d.severity == Severity.ERROR:
+                if Severity.meets_threshold(d.severity, threshold):
                     return "failed"
+        # No hard failure. Now check for incomplete coverage.
+        for r in layer_results.values():
+            if r.status == "incomplete":
+                return "incomplete"
         return "verified"
 
     @staticmethod
