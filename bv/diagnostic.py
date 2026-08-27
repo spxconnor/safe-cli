@@ -65,6 +65,7 @@ class Category(str, enum.Enum):
     DEPENDENCY = "dependency"
     TIMEOUT = "timeout"
     UNKNOWN = "unknown"
+    REPAIR = "repair"
 
 
 # Priority order used by the repair engine (lower index = higher priority).
