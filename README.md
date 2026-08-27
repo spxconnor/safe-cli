@@ -2,7 +2,10 @@
 
 One-command Bash safety for AI coding agents. Verifies before executing, refuses broken scripts.
 
-safe-cli is a small program that runs every Bash script through 10 independent checks before letting it run. If any check finds a problem, the script is refused. Nothing is bypassed. Nothing is deleted.
+safe-cli is a small program that runs every Bash script through 10 independent checks before letting it run. If any check finds a problem, the script is refused. Nothing is silently bypassed. If the verification pipeline
+       does not produce a 'verified' status, the safe execution
+       path refuses to run. --no-sandbox is available as an
+       explicit user opt-in but is NEVER the default. Nothing is deleted.
 
 ```
 safe-cli run script.sh       # verify then execute
@@ -21,7 +24,7 @@ AI coding agents generate Bash constantly. Most of it is correct. A small fracti
 - `cd $HOME/important && rm -rf *` typos and missing quoting
 - Forgetting `set -e` and silently swallowing errors
 
-safe-cli makes those mistakes survivable. It verifies before executing, refuses broken scripts, and provides a hard-isolated Docker sandbox for the actual run.
+safe-cli makes those mistakes survivable. It verifies before executing, refuses broken scripts, and provides a sandboxed execution path (when status is 'verified').
 
 ## The 10 verification layers
 
