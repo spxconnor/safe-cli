@@ -27,14 +27,17 @@ import sys
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, "/opt/safe-cli-repo")
+# Compute the repo root from this test file's location (portable).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+sys.path.insert(0, _REPO_ROOT)
 
 
 class TestCleanupErrorsInitialized(unittest.TestCase):
     def test_docker_sandbox_source_declares_cleanup_errors_local(self):
         # Static check: the function body must declare the variable
         # before the first append() call.
-        path = "/opt/safe-cli-repo/bv/sandbox/docker_sandbox.py"
+        path = os.path.join(_REPO_ROOT, "bv", "sandbox", "docker_sandbox.py")
         with open(path, "r") as f:
             src = f.read()
         # Find the run_script method body. Skip the SandboxResult class

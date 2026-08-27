@@ -17,7 +17,10 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, "/opt/safe-cli-repo")
+# Compute the repo root from this test file's location (portable).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+sys.path.insert(0, _REPO_ROOT)
 
 from bv.quoting.candidates import Candidate  # noqa: E402
 from bv.quoting.model import ContextKind, QuoteType, SemanticFlags, ShellWord  # noqa: E402
@@ -212,7 +215,7 @@ class TestNoAppliedTrueHardcodedElsewhere(unittest.TestCase):
     hardcoded `applied=True` would re-introduce the read-only-call bug."""
 
     def test_applied_true_appears_only_at_final_success_return(self):
-        path = "/opt/safe-cli-repo/bv/quoting/repairs.py"
+        path = os.path.join(_REPO_ROOT, "bv", "quoting", "repairs.py")
         with open(path, "r") as f:
             src = f.read()
         # Strip line comments

@@ -22,8 +22,11 @@ import sys
 import tempfile
 import unittest
 
-# Ensure the repo is on the path. Tests are typically run from /opt/safe-cli-repo.
-sys.path.insert(0, "/opt/safe-cli-repo")
+# Ensure the repo is on the path regardless of where tests are run.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+# Compute the repo root from this test file's location (portable).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bv.config import (  # noqa: E402
     Config,
@@ -289,7 +292,7 @@ class TestNoDynamicAccess(unittest.TestCase):
         # Comments and docstrings are excluded — only ACTIVE code is scanned.
         import os
         import re
-        sandbox_dir = "/opt/safe-cli-repo/bv/sandbox"
+        sandbox_dir = os.path.join(_REPO_ROOT, "bv", "sandbox")
         violations = []
         for fn in os.listdir(sandbox_dir):
             if not fn.endswith(".py"):

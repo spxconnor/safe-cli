@@ -16,10 +16,14 @@ SyntaxWarning is emitted.
 from __future__ import annotations
 
 import sys
+import os
 import unittest
 import warnings
 
-sys.path.insert(0, "/opt/safe-cli-repo")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+# Compute the repo root from this test file's location (portable).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class TestFuzzerNoSyntaxWarning(unittest.TestCase):
@@ -44,7 +48,7 @@ class TestFuzzerNoSyntaxWarning(unittest.TestCase):
         # SyntaxWarning becomes an error in strict modes and we want
         # to fail loudly here so CI catches future regressions.
         import subprocess
-        repo = "/opt/safe-cli-repo"
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         proc = subprocess.run(
             [sys.executable, "-Wall", "-m", "compileall", "-q", "bv", "bin"],
             cwd=repo,
