@@ -138,7 +138,7 @@ class BatsLayer(Layer):
                     ))
 
         result.metadata = {
-            "returncode": proc.returncode,
+            "returncode": proc_returncode,
             "ok": ok,
             "failed": failed,
             "total": total,
