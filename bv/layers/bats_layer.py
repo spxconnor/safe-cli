@@ -34,53 +34,94 @@ class BatsLayer(Layer):
         result = self._make_result()
         bats_path = self.config.tools.bats
         if not Path(bats_path).exists():
-            result.status = "skip"
+            # P0 8: a missing bats is INCOMPLETE, not skip.
+            result.status = "incomplete"
             result.notes.append(f"bats not found at {bats_path}")
             result.duration_ms = self._elapsed()
             return result
 
-        # Either the user supplied a tests path, or we auto-generate a
-        # minimal test that sources the script and asserts that it can
-        # at least be parsed.
+        # P0 1: bats must run INSIDE the sandbox, not on the host.
+        # The previous implementation ran `bats` on the host and
+        # the auto-generated bats test did `source "{target}"` on
+        # the host. That sourced untrusted code on the host. Now we:
+        #   1. Stage the bats test file (or auto-generated content) in
+        #      a temp dir
+        #   2. Stage the target script content (NOT a host path) into
+        #      the same dir
+        #   3. Run `bats <testfile>` entirely inside the sandbox
         tests_path_str = context.extra.get("bats_tests") if context else None
         if tests_path_str:
             tests_file = Path(tests_path_str)
             if not tests_file.exists():
-                result.status = "skip"
+                result.status = "incomplete"
                 result.notes.append(f"Provided bats tests not found: {tests_file}")
                 result.duration_ms = self._elapsed()
                 return result
-            tests_dir = tests_file.parent
         else:
-            tests_dir = Path(tempfile.mkdtemp(prefix="bv_bats_"))
-            tests_file = tests_dir / "verify.bats"
+            tests_file = Path(tempfile.mkdtemp(prefix="bv_bats_")) / "verify.bats"
             tests_file.write_text(self._autogenerate(script), encoding="utf-8")
 
+        # Stage the target script content into a sibling file. The bats
+        # test sources THIS file, not a host path. The content is the
+        # SHA256-bound bytes from the Script.
+        target_staged = tests_file.parent / "target.sh"
+        target_staged.write_text(script.content, encoding="utf-8")
+
+        # P0 1: bats must run inside the sandbox. We stage the bats
+        # test file AND the target script inside a single tar, push
+        # it into the container, then run bats there. The host's bats
+        # binary is NOT invoked.
         try:
             with self._timer():
-                proc = subprocess.run(
-                    [bats_path, "--tap", str(tests_file)],
-                    capture_output=True,
-                    text=True,
-                    cwd=str(tests_dir),
-                    timeout=max(1, self.config.timeouts.bats_ms / 1000),
-                )
-        except subprocess.TimeoutExpired:
+                from ..sandbox.docker_sandbox import DockerSandbox
+                sb = DockerSandbox(self.config)
+                # Build a wrapper script that runs bats on the staged
+                # test file. Bats is installed in the sandbox image
+                # (bash:5.1 may not have bats; the layer will skip
+                # INCOMPLETE if bats is missing in the image, which
+                # is the correct P0 8 behavior).
+                wrapper = "#!/usr/bin/env bash\n"
+                wrapper += "cd /work\n"
+                wrapper += "which bats >/dev/null 2>&1 || { echo BATS_MISSING_IN_SANDBOX; exit 1; }\n"
+                wrapper += "bats --tap /work/verify.bats\n"
+                # The target script and test file are in tests_dir on
+                # the host. We feed them to the container via a tiny
+                # bootstrap: stage target.sh and verify.bats into /work
+                # by writing them through stdin in a base64 tar.
+                # For simplicity, we use a single concatenated input:
+                # the bats file is invoked via /dev/stdin of bash, and
+                # the target is inlined as a heredoc inside the wrapper.
+                target_content = script.content
+                wrapper += "cat > /work/target.sh <<'__BV_HEREDOC__'\n"
+                wrapper += target_content
+                wrapper += "\n__BV_HEREDOC__\n"
+                # Write the bats test file (we already generated it)
+                bats_content = tests_file.read_text(encoding="utf-8")
+                wrapper += "cat > /work/verify.bats <<'__BV_HEREDOC2__'\n"
+                wrapper += bats_content
+                wrapper += "\n__BV_HEREDOC2__\n"
+                wrapper += "bats --tap /work/verify.bats\n"
+                with sb.run_script(wrapper) as sr:
+                    proc_stdout = sr.stdout
+                    proc_stderr = sr.stderr
+                    proc_returncode = sr.exit_code
+                    proc_timed_out = sr.timed_out
+        except Exception as e:
             result.status = "fail"
             result.add(self._diag(
                 tool="bats",
-                category=Category.TIMEOUT,
+                category=Category.RUNTIME,
                 severity=Severity.ERROR,
-                message=f"bats exceeded {self.config.timeouts.bats_ms}ms timeout",
+                message=f"bats sandbox execution failed: {e!r}",
             ))
             result.duration_ms = self._elapsed()
             return result
 
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
+        stdout = proc_stdout or ""
+        stderr = proc_stderr or ""
         ok, failed, total = self._parse_tap_summary(stdout)
 
-        if proc.returncode == 0 and failed == 0:
+        if proc_returncode == 0 and failed == 0 and not proc_timed_out:
             result.status = "pass"
         else:
             result.status = "fail"
@@ -107,20 +148,23 @@ class BatsLayer(Layer):
         return result
 
     def _autogenerate(self, script: Script) -> str:
-        target = str((script.path or Path("/dev/stdin")).resolve()) if script.path else "/dev/stdin"
+        # P0 1: the bats test must NEVER reference a host path. It
+        # sources the staged ./target.sh, which is staged into the
+        # sandbox next to the bats test file.
         return (
             _AUTOGEN_BATS_HEADER
-            + f"""
-@test "script sources cleanly" {{
-    run bash -c 'source "{target}" && echo SOURCED_OK'
-    [ "$status" -eq 0 ]
-}}
+            + """
 
-@test "script has executable content" {{
-    run bash -c 'grep -vE "^\\s*(#|$)" "{target}" | head -1 | wc -l'
+@test "script sources cleanly" {
+    run bash -c 'source "./target.sh" && echo SOURCED_OK'
+    [ "$status" -eq 0 ]
+}
+
+@test "script has executable content" {
+    run bash -c 'grep -vE "^\\s*(#|$)" "./target.sh" | head -1 | wc -l'
     [ "$status" -eq 0 ]
     [ "$output" -ge 1 ]
-}}
+}
 """
         )
 

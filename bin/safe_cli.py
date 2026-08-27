@@ -105,13 +105,18 @@ def _read_stdin() -> str:
 
 
 def cmd_run(script_path: str) -> int:
-    """Verify script_path; execute only if verified."""
+    """Verify script_path; execute only if verified.
+
+    P0 2: execution goes through ExecutionBroker, which runs the
+    verified bytes inside the Docker sandbox. The host's bash binary
+    is NEVER invoked on untrusted code.
+    """
     p = Path(script_path)
     if not p.exists():
         _log("error", f"script not found: {p}")
         return 2
 
-    rc, out = _run_bash_verify([str(p), "--fix", "--no-sandbox", "--ci"])
+    rc, out = _run_bash_verify([str(p), "--fix", "--ci"])
     sys.stdout.write(out)
     sys.stdout.flush()
 
@@ -119,20 +124,47 @@ def cmd_run(script_path: str) -> int:
         _log("refused", "bash_verify rejected the script; NOT executing")
         return 1
 
-    # Verified. Run it in-process via `bash`.
-    _log("verified", f"executing {p}")
-    rc = subprocess.run(["bash", str(p)]).returncode
-    return rc
+    # Build the verified artifact. The bytes we run are the bytes
+    # we verified, SHA256-bound, executed only inside the sandbox.
+    import hashlib
+    from bv.artifact import Artifact
+    content_bytes = p.read_bytes()
+    artifact = Artifact.from_bytes(content_bytes)
+    _log("verified", f"artifact sha256={artifact.sha256[:12]}...; executing in sandbox")
+
+    # P0 2: execute via the broker. The host bash is never used
+    # on untrusted bytes.
+    sys.path.insert(0, str(PKG_ROOT))
+    from bv.config import load_config
+    from bv.executor import ExecutionBroker, ExecutionRequest
+    cfg = load_config()
+    broker = ExecutionBroker(cfg)
+    request = ExecutionRequest(artifact=artifact, timeout_s=30)
+    result = broker.execute(request)
+    sys.stdout.write(result.stdout)
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+    if result.error:
+        _log("error", f"execution broker: {result.error}")
+        return 1
+    if result.timed_out:
+        _log("error", "sandbox execution timed out (workload killed)")
+    return result.exit_code
 
 
 def cmd_exec(snippet: str) -> int:
-    """Verify an inline Bash snippet; execute only if verified."""
+    """Verify an inline Bash snippet; execute only if verified.
+
+    P0 2: execution goes through ExecutionBroker. The host bash
+    is never invoked on untrusted bytes.
+    """
     if not snippet or not snippet.strip():
         _log("error", "empty snippet")
         return 2
 
-    # Write to a temp file (use NamedTemporaryFile but never rm it;
-    # the finally block renames it to a forensic path).
+    # Write the snippet to a temp file so the verifier can read it,
+    # but the actual execution will use the bytes in memory via
+    # ExecutionBroker (not the file).
     fd, tmp_path_str = tempfile.mkstemp(prefix="safe_cli_exec_", suffix=".sh")
     tmp_path = Path(tmp_path_str)
     try:
@@ -140,7 +172,7 @@ def cmd_exec(snippet: str) -> int:
             f.write(snippet + ("\n" if not snippet.endswith("\n") else ""))
         os.chmod(tmp_path, 0o600)
 
-        rc, out = _run_bash_verify([str(tmp_path), "--fix", "--no-sandbox", "--ci"])
+        rc, out = _run_bash_verify([str(tmp_path), "--fix", "--ci"])
         sys.stdout.write(out)
         sys.stdout.flush()
 
@@ -150,13 +182,31 @@ def cmd_exec(snippet: str) -> int:
             _log("forensic", f"snippet preserved at {kept}")
             return 1
 
-        _log("verified", f"executing snippet ({tmp_path})")
-        rc = subprocess.run(["bash", str(tmp_path)]).returncode
+        # P0 2: build the verified artifact from the snippet bytes.
+        # Execution happens in the sandbox via the broker; the host
+        # bash is not invoked on untrusted bytes.
+        from bv.artifact import Artifact
+        artifact = Artifact.from_text(snippet)
+        _log("verified", f"artifact sha256={artifact.sha256[:12]}...; executing in sandbox")
+        sys.path.insert(0, str(PKG_ROOT))
+        from bv.config import load_config
+        from bv.executor import ExecutionBroker, ExecutionRequest
+        cfg = load_config()
+        broker = ExecutionBroker(cfg)
+        request = ExecutionRequest(artifact=artifact, timeout_s=30)
+        result = broker.execute(request)
+        sys.stdout.write(result.stdout)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+        if result.error:
+            _log("error", f"execution broker: {result.error}")
+            kept = _forensic_move(tmp_path, "ran")
+            _log("forensic", f"snippet preserved at {kept}")
+            return 1
         kept = _forensic_move(tmp_path, "ran")
         _log("forensic", f"snippet preserved at {kept}")
-        return rc
+        return result.exit_code
     except Exception:
-        # On any unexpected error, preserve the temp file too
         if tmp_path.exists():
             _forensic_move(tmp_path, "error")
         raise

@@ -141,13 +141,13 @@ class DockerSandbox:
                 cmd, capture_output=True, text=True, timeout=10,
             )
         except subprocess.TimeoutExpired:
-            return SandboxResult(
+            yield SandboxResult(
                 exit_code=124, stdout="", stderr="",
                 duration_ms=0, timed_out=True,
                 error="docker create timed out",
             )
         if create_proc.returncode != 0:
-            return SandboxResult(
+            yield SandboxResult(
                 exit_code=create_proc.returncode,
                 stdout=create_proc.stdout,
                 stderr=create_proc.stderr,
@@ -156,7 +156,7 @@ class DockerSandbox:
             )
         container_id = (create_proc.stdout or "").strip()
         if not container_id:
-            return SandboxResult(
+            yield SandboxResult(
                 exit_code=1, stdout="", stderr="",
                 duration_ms=0,
                 error="docker create returned empty container id",
@@ -234,7 +234,7 @@ class DockerSandbox:
         except Exception:
             pass
 
-        return SandboxResult(
+        yield SandboxResult(
             exit_code=exit_code,
             stdout=stdout,
             stderr=stderr,
