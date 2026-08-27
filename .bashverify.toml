@@ -1,0 +1,64 @@
+# bash_verify default configuration
+# Safe-by-default. Favor correctness and safety over speed.
+
+[verify]
+# Whether to enable the repair loop
+self_healing = true
+# Maximum repair attempts before declaring SELF_HEALING_FAILED
+max_repair_attempts = 3
+# Maximum identical diagnostic repetitions
+max_identical_diagnostics = 4
+# Maximum total verification wall-clock time in seconds
+max_total_seconds = 180
+# Severity threshold: diagnostics at or above this are blockers
+# values: error | warning | info | style
+severity_threshold = "warning"
+# Network policy during sandbox execution: "deny" | "allow"
+network_policy = "none"
+# Default sandbox runtime image (Ubuntu 22.04 + bash + coreutils + bats)
+sandbox_image = "bash:5.1"
+
+[timeouts]
+tree_sitter_ms = 5000
+bash_n_ms = 5000
+shellcheck_ms = 15000
+lsp_ms = 10000
+shfmt_ms = 5000
+bats_ms = 60000
+sandbox_ms = 30000
+fuzz_total_ms = 60000
+adversarial_ms = 30000
+side_effects_ms = 30000
+
+[resources]
+sandbox_memory = "256m"
+sandbox_cpus = "1.0"
+sandbox_pids_limit = 256
+fuzz_iterations = 200
+fuzz_max_input_bytes = 4096
+
+[paths]
+log_dir = "/opt/bash-verifier/_temp/logs"
+regression_corpus = "/opt/bash-verifier/tests/adversarial_corpus"
+fuzz_corpus = "/opt/bash-verifier/tests/fuzz_corpus"
+broken_examples = "/opt/bash-verifier/tests/broken_scripts"
+
+[tools]
+shellcheck = "/usr/bin/shellcheck"
+shfmt = "/usr/local/bin/shfmt"
+bats = "/usr/bin/bats"
+bash_language_server = "bash-language-server"
+docker = "/usr/bin/docker"
+bash = "/bin/bash"
+python3 = "/usr/bin/python3"
+node = "/usr/bin/node"
+
+[reporting]
+human_readable = true
+json_output = false
+redact_secrets = true
+
+[cache]
+enabled = true
+dir = "/opt/bash-verifier/_temp/cache"
+ttl_seconds = 3600

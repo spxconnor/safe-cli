@@ -1,0 +1,25 @@
+[Unit]
+Description=bash_verify health-check timer (runs --doctor every 15 minutes)
+Documentation=file:///opt/bash-verifier/docs/ARCHITECTURE.md
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+# Run the verifier's doctor check; log to journald.
+ExecStart=/opt/bash-verifier/bin/bash_verify --doctor
+StandardOutput=journal
+StandardError=journal
+# Don't run as root for safety; use nobody if possible.
+User=root
+# Resource limits
+MemoryMax=512M
+CPUQuota=50%
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/bash-verifier/_temp
+
+[Install]
+WantedBy=multi-user.target

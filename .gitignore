@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Test artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.mypy_cache/
+
+# Runtime caches and backups (NEVER committed)
+_temp/
+*.bak
+*.bak.*
+*.tmp
+*.disabled
+core
+core.*
+nohup.out
+
+# Local config overrides
+.bashverify.local.toml
+
+# Node
+node_modules/
+package-lock.json
+
+# Logs
+*.log
+
+
+# Quarantine and test-temp directories (NEVER commit)
+_temp_git_quarantine/
+_temp_clean_pycache_*/
+_temp_user_test_*/
+_temp_verify_clone_*/

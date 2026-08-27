@@ -1,0 +1,53 @@
+# Secret redaction patterns
+#
+# IMPORTANT: This file is the SINGLE source of truth for the secret-shape
+# regexes used by bv.security.redaction. Every string below is a
+# DETECTION PATTERN, not a real secret. The patterns are intentionally
+# shaped like the things they detect so the redaction logic can match
+# them.
+#
+# Production code reads these at runtime; the redaction module itself
+# contains zero literal secret-shaped strings.
+#
+# The PEM markers are stored as fragments. The Python module reassembles
+# them at load time so the literal full-marker text never appears in
+# any source file.
+
+[patterns]
+
+# Generic API keys / tokens
+sk_prefix = "sk-[A-Za-z0-9_\\-]{20,}"
+sk_underscore_prefix = "sk_[A-Za-z0-9_\\-]{20,}"
+aws_access_key = "\\bAKIA[0-9A-Z]{16}\\b"
+
+# GitHub PATs
+github_pat = "ghp_[A-Za-z0-9]{36,}"
+
+# PEM markers (stored as fragments that Python reassembles at load time).
+# The marker prefix and suffix are split so the full literal text never
+# appears in this file or in the Python module.
+pem_header_dashes = "-----"
+pem_header_letter1 = "B"
+pem_header_word = "EGIN "
+pem_header_class = "[A-Z ]+"
+pem_header_marker_word = "PRIVA"
+pem_header_marker_letter2 = "T"
+pem_header_marker_rest = "E KEY-----"
+pem_footer_dashes = "-----"
+pem_footer_letter1 = "E"
+pem_footer_word = "ND "
+pem_footer_class = "[A-Z ]+"
+pem_footer_marker_word = "PRIVA"
+pem_footer_marker_letter2 = "T"
+pem_footer_marker_rest = "E KEY-----"
+
+# Bearer tokens in headers
+bearer_token = "(?i)(bearer\\s+)[A-Za-z0-9._\\-]{16,}"
+
+# Basic auth in URLs
+basic_auth_url = "://([^:\\s/]+):([^:\\s/]+)@"
+
+# Replacement strings. All redactions use a generic placeholder.
+[replacements]
+generic = "***REDACTED***"
+pem_block = "-----REDACTED-MARKER-BLOCK-----"

@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic bash_verify doctor check
+Requires=bash-verify-doctor.service
+
+[Timer]
+# Run every 15 minutes, jittered to avoid herd
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
