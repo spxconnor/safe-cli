@@ -63,6 +63,38 @@ class TreeSitterLayer(Layer):
             "subshell_count": 0,
         }
         self._collect_structure(root, meta)
+        # P0 15 cross-check: run the line-based heredoc scanner and
+        # compare counts. If the two disagree, emit a parser-
+        # disagreement diagnostic. We do NOT auto-modify; the
+        # orchestrator can decide what to do with the disagreement.
+        try:
+            from ..heredoc import scan_heredocs
+            from ..diagnostic import Diagnostic, Category, Severity
+            ts_count = meta.get("heredoc_count", 0)
+            lex_results = scan_heredocs(script.content)
+            lex_count = len(lex_results)
+            if ts_count != lex_count:
+                op = meta.get("_last_heredoc_op") or (1, 1)
+                result.add(Diagnostic(
+                    tool="tree_sitter",
+                    category=Category.PARSING,
+                    severity=Severity.WARNING,
+                    file=script.path.as_posix() if script.path else "<stdin>",
+                    line=op[0], column=op[1],
+                    message=(
+                        f"Tree Sitter reports {ts_count} heredoc(s); "
+                        f"line scanner reports {lex_count}. "
+                        "Treat the result as not unconditionally safe."
+                    ),
+                    code="BV-HEREDOC-012",
+                    confidence=0.8,
+                    layer=self.name,
+                    repairable=False,
+                ))
+            meta["heredoc_count_lex"] = lex_count
+            meta["heredoc_count_ts"] = ts_count
+        except Exception as e:  # noqa: BLE001
+            meta["heredoc_analyzer_error"] = repr(e)
         result.metadata = meta
 
         if root.has_error:
@@ -122,6 +154,11 @@ class TreeSitterLayer(Layer):
             meta["function_count"] += 1
         elif t in ("heredoc_body", "heredoc_redirect"):
             meta["heredoc_count"] += 1
+            # P0 extension: keep the most recent operator location so
+            # the heredoc analyzer can attribute diagnostics to it.
+            if t == "heredoc_redirect":
+                meta["_last_heredoc_op"] = (node.start_point[0] + 1, node.start_point[1] + 1)
+                meta["_last_heredoc_text"] = bytes(node.text).decode("utf-8", "replace")
         elif t == "command_substitution":
             meta["command_substitution_count"] += 1
         elif t == "subshell":

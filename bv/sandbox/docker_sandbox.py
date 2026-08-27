@@ -32,6 +32,18 @@ from ..security.redaction import redact_secrets
 
 @dataclass
 class SandboxResult:
+    """Outcome of a sandbox invocation.
+
+    Image-identity fields (P1-12 hardened):
+      - `sandbox_image`: the configured reference (tag form, e.g. "bash:5.1")
+      - `sandbox_image_digest_configured`: the digest declared in config (may be "")
+      - `sandbox_image_digest_actual`: the digest Docker actually loaded for the
+        container we ran (always "" if docker was unavailable or inspect failed)
+      - `sandbox_image_digest_matched`: True ONLY when
+        `sandbox_image_digest_configured != ""` AND `sandbox_image_digest_actual == sandbox_image_digest_configured`.
+        When the configured digest is empty, this field is False (the sandbox is
+        in mutable-tag mode; secure execution requires it to be True).
+    """
     exit_code: int
     stdout: str
     stderr: str
@@ -42,6 +54,13 @@ class SandboxResult:
     error: str = ""
     # P0-4: cleanup failures surfaced explicitly
     cleanup_failures: list = field(default_factory=list)
+    # P1-12 (hardened): declared on the dataclass so the schema is part of
+    # the public contract. The previous code passed these via kwarg only,
+    # which the dataclass silently ignored (mismatched-keyword silent loss).
+    sandbox_image: str = ""
+    sandbox_image_digest_configured: str = ""
+    sandbox_image_digest_actual: str = ""
+    sandbox_image_digest_matched: bool = False
 
 
 class DockerSandbox:
@@ -50,19 +69,57 @@ class DockerSandbox:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.image = config.verify.sandbox_image
-        # P1-12: expected digest from config (if set). The actual local
-        # image id is recorded at run time into self._resolved_image_id.
-        self.expected_image_digest = getattr(
-            config.verify, "sandbox_image_digest", ""
-        )
+        # P1-12 (hardened): typed access only. The previous code used
+        # getattr(config.verify, "sandbox_image_digest", "") which silently
+        # returned "" even when the value was declared in .bashverify.toml.
+        # That is now a real field on VerifySettings (see bv/config.py)
+        # and was validated at config load time by parse_sandbox_image_digest.
+        self.expected_image_digest: str = config.verify.sandbox_image_digest
         self._resolved_image_id: str = ""
         self.docker_bin = config.tools.docker
         if not Path(self.docker_bin).exists():
             raise RuntimeError(f"docker binary not found at {self.docker_bin}")
-        # Ensure image is pulled
+        # Ensure image is pulled AND record the actual local digest.
         self._ensure_image()
+        # P1-12 (hardened): fail closed at construction time when a digest is
+        # configured but the actual local image does not match. This prevents
+        # any later call path from accidentally running a different image.
+        self._enforce_digest_or_fail()
+
+    def _resolve_image_id(self) -> str:
+        """Get the actual immutable image id Docker has for `self.image`.
+
+        Uses `docker image inspect --format '{{.Id}}'` which returns the
+        full sha256:<hex> identity regardless of which tag was used to
+        pull it. Returns "" if Docker is unavailable or inspect failed.
+        """
+        try:
+            r = subprocess.run(
+                [self.docker_bin, "image", "inspect", self.image, "--format", "{{.Id}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception as e:
+            # We surface this rather than silently swallowing it. The
+            # caller (`_enforce_digest_or_fail`) refuses to construct
+            # the sandbox when a digest is configured and we cannot
+            # determine the actual image digest — silent failure here
+            # would compromise the security model.
+            print(
+                f"warning: docker image inspect failed for {self.image!r}: {e!r}",
+                file=__import__("sys").stderr,
+            )
+            return ""
+        if r.returncode != 0:
+            return ""
+        return (r.stdout or "").strip()
 
     def _ensure_image(self) -> None:
+        """Pull the image if needed; record its actual local digest.
+
+        After this method returns, `self._resolved_image_id` is either
+        the actual local image digest (sha256:<hex>) or "" if the
+        image could not be inspected.
+        """
         # Check if image already present
         proc = subprocess.run(
             [self.docker_bin, "image", "inspect", self.image],
@@ -70,15 +127,7 @@ class DockerSandbox:
             text=True,
         )
         if proc.returncode == 0:
-            # P1-12: record the actual local image ID for the report
-            try:
-                import json as _json
-                info = _json.loads(proc.stdout or "[]")
-                if info and isinstance(info, list):
-                    self._resolved_image_id = info[0].get("Id", "")
-            except Exception as e:
-                cleanup_errors.append(f"cleanup: {e!r}")
-
+            self._resolved_image_id = self._resolve_image_id()
             return
         pull = subprocess.run(
             [self.docker_bin, "pull", self.image],
@@ -88,15 +137,34 @@ class DockerSandbox:
         )
         if pull.returncode != 0:
             raise RuntimeError(f"docker pull failed for {self.image}: {pull.stderr}")
-        # P1-12: after pull, capture the resolved image id
-        try:
-            r = subprocess.run(
-                [self.docker_bin, "image", "inspect", self.image, "--format", "{{.Id}}"],
-                capture_output=True, text=True, timeout=10,
+        self._resolved_image_id = self._resolve_image_id()
+
+    def _enforce_digest_or_fail(self) -> None:
+        """When a digest is configured, refuse to construct if the actual
+        local image digest does not match.
+
+        Spec section 1G: a digest mismatch must be fail-closed. We enforce
+        this at construction so no later caller can accidentally run the
+        wrong image. Mutable-tag mode (no digest configured) is allowed
+        but the SandboxResult will report `sandbox_image_digest_matched=False`,
+        which the upstream execution broker treats as "incomplete".
+        """
+        if not self.expected_image_digest:
+            return  # mutable-tag mode; broker is responsible for rejecting this for secure execution
+        actual = self._resolved_image_id
+        if not actual:
+            # Could not inspect Docker; refuse rather than trust a mutable tag.
+            raise RuntimeError(
+                f"Sandbox image digest verification failed: configured digest "
+                f"{self.expected_image_digest!r} but could not determine actual "
+                f"local digest for image {self.image!r}. Refusing to construct."
             )
-            self._resolved_image_id = (r.stdout or "").strip()
-        except Exception:
-            self._resolved_image_id = ""
+        if actual != self.expected_image_digest:
+            raise RuntimeError(
+                f"Sandbox image digest mismatch: configured "
+                f"{self.expected_image_digest!r}, actual {actual!r}. "
+                f"Refusing to construct."
+            )
 
     @contextmanager
     def run_script(
@@ -136,6 +204,15 @@ class DockerSandbox:
         memory = memory or self.config.resources.sandbox_memory
         cpus = cpus or self.config.resources.sandbox_cpus
         timeout_s = timeout_s or max(1, self.config.timeouts.sandbox_ms // 1000)
+
+        # P0-4 (hardened): local accumulator for cleanup failures. The
+        # previous code referenced `cleanup_errors` in five places but
+        # never initialized it, producing a NameError at run time that
+        # broke the Bats sandbox layer and any other call path that hit
+        # a cleanup exception. Initialize it here at the top of the
+        # function so every subsequent `cleanup_errors.append(...)`
+        # call is well-defined.
+        cleanup_errors: list[str] = []
 
         # Build docker create command (the same as docker run except
         # we split create from start so we can hold the container ID
@@ -265,6 +342,18 @@ class DockerSandbox:
             cleanup_errors.append(f"docker rm --force: {e!r}")
 
 
+        # P1-12 (hardened): SandboxResult.image_id / image_digest_matched were
+        # being passed as kwargs in the previous version, but the dataclass
+        # did not declare those fields, so Python silently dropped them
+        # (no error, no warning — classic silent data loss). The dataclass
+        # now declares them explicitly; we populate them here with typed
+        # access (no getattr fallbacks).
+        actual_digest = self._resolved_image_id
+        digest_matched = (
+            bool(self.expected_image_digest)
+            and bool(actual_digest)
+            and actual_digest == self.expected_image_digest
+        )
         yield SandboxResult(
             exit_code=exit_code,
             stdout=stdout,
@@ -273,11 +362,10 @@ class DockerSandbox:
             timed_out=timed_out,
             container_id=container_id,
             cleanup_failures=list(cleanup_errors),
-            image_id=getattr(self, "_resolved_image_id", ""),
-            image_digest_matched=(
-                bool(self.expected_image_digest)
-                and getattr(self, "_resolved_image_id", "") == self.expected_image_digest
-            ) if self.expected_image_digest else True,
+            sandbox_image=self.image,
+            sandbox_image_digest_configured=self.expected_image_digest,
+            sandbox_image_digest_actual=actual_digest,
+            sandbox_image_digest_matched=digest_matched,
         )
 
     def available(self) -> bool:

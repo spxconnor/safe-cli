@@ -82,6 +82,10 @@ def environment_snapshot(config=None) -> dict:
         "bats_version": _tool_version("bats"),
         "python_version": sys.version.split()[0],
         "sandbox_image": cfg.verify.sandbox_image if cfg else "",
+        # P1-12 (hardened): the immutable digest of the sandbox image. A
+        # digest change in config MUST invalidate the cache because it
+        # changes the security identity of the verification environment.
+        "sandbox_image_digest": cfg.verify.sandbox_image_digest if cfg else "",
     }
     if cfg is not None:
         try:

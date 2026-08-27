@@ -1,4 +1,4 @@
-"""bv/quoting/fuzzer.py — focused quoting argument-boundary fuzzer.
+r"""bv/quoting/fuzzer.py — focused quoting argument-boundary fuzzer.
 
 Spec section 15 calls for a focused fuzzer specifically for Bash
 argument boundaries. The goal is to discover inputs that expose
@@ -10,9 +10,9 @@ We generate adversarial argument values from a vocabulary of:
     - quotes (single, double, mixed)
     - slashes (/, //)
     - spaces, tabs, newlines
-    - shell metacharacters (;, &, |, <, >, $, `, \\, *, ?, [], {}, ())
+    - shell metacharacters (;, &, |, <, >, $, `, \, *, ?, [], {}, ())
     - variable syntax ($X, ${X})
-    - command substitution syntax ($(cmd), \`cmd\`)
+    - command substitution syntax (e.g. $(cmd) and `cmd`)
     - Unicode (BMP subset)
     - leading hyphens
     - long strings
@@ -27,6 +27,13 @@ We then build scripted scenarios:
 
 For each scenario we run the analyzer. Failures (parser crashes,
 wrong findings, repair engine bugs) are recorded as regression cases.
+
+NOTE: this module's docstring is a raw triple-quoted string so the backslash
+characters in the vocabulary description (e.g. backslash and backtick)
+are treated as literal characters rather than invalid Python escape
+sequences. The previous version was a regular triple-quoted string
+and emitted a SyntaxWarning under -Wall for the backslash-backtick
+sequence.
 
 Each generated scenario produces a record:
 

@@ -65,13 +65,49 @@ class RepairCertificate:
 
 @dataclass(frozen=True)
 class RepairOutcome:
-    """The full result of attempting a quoting repair on one candidate."""
+    """The full result of attempting a quoting repair on one candidate.
+
+    Spec section 2 of the hardening pass: explicit semantics for each
+    boolean. A repair goes through several distinct stages and the
+    outcome records each one explicitly. The contract is:
+
+      candidate_created : True iff we produced a candidate replacement
+                         string and computed its SHA256.
+      validated         : True iff validation (when required) succeeded
+                         for the candidate. False means we refused the
+                         candidate outright.
+      persisted         : True iff we successfully wrote the candidate
+                         bytes to `target_path` AND the on-disk hash
+                         matched the candidate hash. The atomic-write
+                         step is the only step that sets this True.
+      applied           : True iff the persisted bytes were actually
+                         accepted as the new file contents. Currently
+                         `applied == persisted` because the only way to
+                         become persisted is to write successfully.
+
+    `applied` and `persisted` are kept distinct because future paths
+    (e.g. an interrupted write that left a partial temp file) may update
+    them independently. Callers that just need to know "did anything
+    happen on disk?" should check `persisted`. Callers that need to
+    distinguish "I calculated a candidate" from "I wrote it" should
+    check `applied`.
+
+    Read-only callers (target_path is None) get:
+      candidate_created = True
+      validated         = True (or False if validation failed)
+      persisted         = False
+      applied           = False
+    """
     candidate: Candidate
     decision: PlanDecision
     validation: ValidationResult
-    applied: bool                     # True if we wrote to disk
-    new_sha256: str
-    certificate: Optional[RepairCertificate]
+    # Spec section 2: explicit booleans. Each is independent.
+    candidate_created: bool = False
+    validated: bool = False
+    persisted: bool = False
+    applied: bool = False
+    new_sha256: str = ""           # SHA256 of the candidate bytes (when created)
+    certificate: Optional[RepairCertificate] = None
     error: Optional[str] = None
 
 
@@ -170,6 +206,24 @@ def run_repair(
 ) -> RepairOutcome:
     """Apply or refuse a single candidate repair.
 
+    Contract (Spec section 2 of the hardening pass):
+
+      READ-ONLY call (target_path is None):
+        candidate_created = True iff we produced the candidate bytes
+        validated         = True iff validation passed (or wasn't required)
+        persisted         = False  (NEVER set without an actual disk write)
+        applied           = False  (NEVER set without an actual disk write)
+
+      PERSISTING call (target_path is given, validation passes, atomic
+      write succeeds, post-write hash matches candidate hash):
+        candidate_created = True
+        validated         = True
+        persisted         = True
+        applied           = True
+
+    Any I/O or hash-mismatch failure yields persisted=False, applied=False,
+    error=<message>.
+
     - `source`         the original source text
     - `word`           the ShellWord the candidate refers to
     - `candidate`      the Candidate to apply
@@ -191,11 +245,16 @@ def run_repair(
             candidate=candidate,
             decision=decision,
             validation=ValidationResult(False, False, False, True, before_sha, ("refused",), ()),
+            candidate_created=False,
+            validated=False,
+            persisted=False,
             applied=False,
-            new_sha256=before_sha,
+            new_sha256="",
             certificate=None,
+            error="planner refused candidate",
         )
 
+    # Candidate is created.
     new_source = apply_to_text(source, candidate)
     after_sha = _hash_str(new_source)
 
@@ -220,48 +279,114 @@ def run_repair(
 
     if require_validation and not validation.passed:
         # Refuse to apply a candidate that fails static validation.
+        # We produced a candidate but explicitly did NOT validate it.
         return RepairOutcome(
             candidate=candidate,
             decision=decision,
             validation=validation,
+            candidate_created=True,
+            validated=False,
+            persisted=False,
             applied=False,
             new_sha256=after_sha,
             certificate=cert,
             error="static validation failed",
         )
 
-    if target_path is not None:
-        if backup_path is not None:
-            try:
-                # Backup is a COPY, not a move; we never destroy the original.
-                _atomic_write_text(backup_path, source)
-            except Exception as e:
-                return RepairOutcome(
-                    candidate=candidate,
-                    decision=decision,
-                    validation=validation,
-                    applied=False,
-                    new_sha256=after_sha,
-                    certificate=cert,
-                    error=f"backup failed: {e}",
-                )
+    # READ-ONLY path: candidate created, validated, never persisted.
+    if target_path is None:
+        return RepairOutcome(
+            candidate=candidate,
+            decision=decision,
+            validation=validation,
+            candidate_created=True,
+            validated=True,
+            persisted=False,
+            applied=False,
+            new_sha256=after_sha,
+            certificate=cert,
+        )
+
+    # PERSISTING path: backup (optional), atomic write, then verify the
+    # resulting on-disk hash matches the candidate hash before claiming
+    # success.
+    if backup_path is not None:
         try:
-            _atomic_write_text(target_path, new_source)
+            # Backup is a COPY, not a move; we never destroy the original.
+            _atomic_write_text(backup_path, source)
         except Exception as e:
             return RepairOutcome(
                 candidate=candidate,
                 decision=decision,
                 validation=validation,
+                candidate_created=True,
+                validated=True,
+                persisted=False,
                 applied=False,
                 new_sha256=after_sha,
                 certificate=cert,
-                error=f"atomic write failed: {e}",
+                error=f"backup failed: {e}",
             )
+    try:
+        _atomic_write_text(target_path, new_source)
+    except Exception as e:
+        return RepairOutcome(
+            candidate=candidate,
+            decision=decision,
+            validation=validation,
+            candidate_created=True,
+            validated=True,
+            persisted=False,
+            applied=False,
+            new_sha256=after_sha,
+            certificate=cert,
+            error=f"atomic write failed: {e}",
+        )
+
+    # Spec section 2F: post-write hash recheck. The atomic rename is supposed
+    # to be atomic, but defense in depth: verify the file actually contains
+    # the bytes we intended.
+    try:
+        with open(target_path, "rb") as f:
+            written = f.read()
+    except Exception as e:
+        return RepairOutcome(
+            candidate=candidate,
+            decision=decision,
+            validation=validation,
+            candidate_created=True,
+            validated=True,
+            persisted=False,
+            applied=False,
+            new_sha256=after_sha,
+            certificate=cert,
+            error=f"post-write read failed: {e}",
+        )
+    written_sha = hashlib.sha256(written).hexdigest()
+    if written_sha != after_sha:
+        return RepairOutcome(
+            candidate=candidate,
+            decision=decision,
+            validation=validation,
+            candidate_created=True,
+            validated=True,
+            persisted=False,
+            applied=False,
+            new_sha256=after_sha,
+            certificate=cert,
+            error=(
+                f"post-write hash mismatch: expected {after_sha[:16]}... "
+                f"on disk got {written_sha[:16]}..."
+            ),
+        )
 
     return RepairOutcome(
         candidate=candidate,
         decision=decision,
         validation=validation,
+        candidate_created=True,
+        validated=True,
+        persisted=True,
         applied=True,
         new_sha256=after_sha,
         certificate=cert,
