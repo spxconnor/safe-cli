@@ -58,3 +58,41 @@ class TestP119StrongerCacheKeys(unittest.TestCase):
         finally:
             mod.environment_snapshot = original
         self.assertNotEqual(k1, k2)
+
+
+class TestP118PathSnapshot(unittest.TestCase):
+    """P1-18: TOCTOU defense. The Script captures a path snapshot
+    at load time and can verify it has not been swapped before
+    execution (e.g. via symlink replacement)."""
+
+    def test_path_snapshot_captures_inode_and_dev(self):
+        import tempfile
+        from bv.script import from_path
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as tf:
+            tf.write("#!/usr/bin/env bash\necho ok\n")
+            path = tf.name
+        try:
+            s = from_path(path)
+            snap = s.path_snapshot()
+            self.assertTrue(snap.get("exists"))
+            self.assertGreater(snap.get("inode", 0), 0)
+            self.assertGreater(snap.get("size", 0), 0)
+            self.assertEqual(len(snap.get("sha256", "")), 64)
+        finally:
+            os.unlink(path)
+
+    def test_verify_unchanged_since_detects_modification(self):
+        import tempfile
+        from bv.script import from_path
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as tf:
+            tf.write("#!/usr/bin/env bash\necho v1\n")
+            path = tf.name
+        try:
+            s = from_path(path)
+            snap = s.path_snapshot()
+            # Modify the file in place (TOCTOU attack simulation)
+            with open(path, "w") as f:
+                f.write("#!/usr/bin/env bash\necho v2\n")
+            self.assertFalse(s.verify_unchanged_since(snap))
+        finally:
+            os.unlink(path)

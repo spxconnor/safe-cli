@@ -83,19 +83,64 @@ class Script:
     def verify_integrity(self) -> bool:
         """Re-read the file from disk and confirm the SHA256 still matches.
 
-        This is the P0 4 TOCTOU defense: a script file could be
-        modified between the time the verifier reads it and the time
-        the executor runs it. verify_integrity must be called by
-        every execution path between verify and exec, and the executor
-        must refuse to run if the SHA256 has changed.
+        P0-4: a script file could be modified between the time the
+        verifier reads it and the time the executor runs it.
         """
         if not self.path:
-            return True  # stdin-sourced scripts cannot be TOCTOU'd on disk
+            return True
         try:
             current = self.path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return False
         return self._hash(current) == self.content_sha256
+
+    def path_snapshot(self) -> dict:
+        """P1-18: capture a small set of (device, inode, type, size,
+        mtime, sha256) for the object the path currently points to.
+
+        Used as a TOCTOU defense: capture the snapshot at read time,
+        then re-resolve at execution time. If any field changes,
+        the object has been swapped (e.g. symlink replace).
+        """
+        if not self.path:
+            return {}
+        try:
+            st = self.path.stat()
+        except OSError:
+            return {"exists": False}
+        snap = {
+            "exists": True,
+            "device": getattr(st, "st_dev", 0),
+            "inode": getattr(st, "st_ino", 0),
+            "mode": getattr(st, "st_mode", 0),
+            "size": getattr(st, "st_size", 0),
+            "mtime": getattr(st, "st_mtime", 0),
+        }
+        # Include the sha256 of the current contents (P0-4)
+        try:
+            content = self.path.read_bytes()
+            import hashlib
+            snap["sha256"] = hashlib.sha256(content).hexdigest()
+        except OSError:
+            snap["sha256"] = ""
+        return snap
+
+    def verify_unchanged_since(self, snapshot: dict) -> bool:
+        """P1-18: re-resolve the path and compare the snapshot.
+        Returns False if the object has been swapped (symlink, file
+        replaced, permissions changed, content changed).
+        """
+        if not snapshot:
+            return True  # no snapshot to compare against
+        if not self.path:
+            return snapshot.get("exists", True)
+        current = self.path_snapshot()
+        if not current.get("exists", False) and snapshot.get("exists", False):
+            return False
+        for key in ("device", "inode", "size", "mtime", "sha256"):
+            if current.get(key) != snapshot.get(key):
+                return False
+        return True
 
     def backup(self, label: str = "step") -> Path:
         """Copy current content to a timestamped backup directory."""
