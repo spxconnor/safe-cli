@@ -13,9 +13,9 @@
 #   bv_wrap 'echo hello; rm -rf /tmp/foo'
 #
 # The helper writes the command sequence to a temp file and runs
-# `bash_verify --fix --write-back` on it. If verification fails (status
-# != "verified"), the snippet is NOT executed. The temp file is moved
-# aside for forensics instead of being deleted.
+# `safe-cli exec` on it (sandbox by default). If verification fails,
+# the snippet is NOT executed. The host bash is NEVER used on
+# untrusted bytes.
 #
 # This file is sourced-only — never executed.
 
@@ -53,24 +53,21 @@ _bv_status_ok() {
 # repaired) version. If verification fails, the snippet is NOT executed
 # and the temp file is preserved for forensics.
 bv_wrap() {
+    # P0-5: never invoke host bash on untrusted bytes. The verified
+    # snippet is passed to safe-cli exec, which goes through the
+    # ExecutionBroker (sandbox by default; --no-sandbox available
+    # as an explicit opt-in but NEVER the default for the agent).
     local snippet="$1"
-    local tmp out rc
-    tmp=$(mktemp -t bv_wrap_XXXXXX.sh)
-    printf '%s\n' "$snippet" > "$tmp"
-    echo "[bv_wrap] verifying $tmp ..." >&2
-    # --ci makes bash_verify exit nonzero on failure.
-    out=$("${BV_BIN}" "$tmp" --fix --ci 2>&1)
+    local rc
+    echo "[bv_wrap] verifying inline snippet via safe-cli exec ..." >&2
+    # safe-cli exec builds an Artifact, calls ExecutionBroker.execute,
+    # and runs inside the Docker sandbox. The host bash is NEVER used
+    # on untrusted bytes. --ci makes safe-cli exit nonzero on failure.
+    "${SAFE_CLI:-safe-cli}" exec --ci -- "$snippet"
     rc=$?
-    echo "$out"
     if [[ $rc -ne 0 ]]; then
         echo "[bv_wrap] verification FAILED (rc=$rc); snippet NOT executed." >&2
-        mv "$tmp" "${tmp}.failed-$(date +%s)"
-        return $rc
     fi
-    echo "[bv_wrap] verified; executing $tmp ..." >&2
-    bash "$tmp"
-    rc=$?
-    mv "$tmp" "${tmp}.ran-$(date +%s)"
     return $rc
 }
 
@@ -78,6 +75,13 @@ bv_wrap() {
 # Args: <script.sh> [--strict]
 bv_fix() {
     "${BV_BIN}" --fix --write-back "$@"
+}
+
+# P0-5: safe-cli run executes the verified artifact inside the sandbox
+# (via ExecutionBroker). The host bash is NEVER invoked on untrusted
+# bytes. This is the safe path for an AI agent to run a script.
+bv_run() {
+    "${SAFE_CLI:-safe-cli}" run "$@"
 }
 
 # Just the doctor check.
