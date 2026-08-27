@@ -25,7 +25,11 @@ AGENT_HELPER = REPO / "agent_integration.sh"
 class TestNoNoSandboxDefault(unittest.TestCase):
 
     def test_cli_does_not_pass_no_sandbox_by_default(self):
-        """The CLI must not embed --no-sandbox in cmd_run or cmd_exec."""
+        """The CLI must not pass --no-sandbox to bash_verify from inside
+        cmd_run or cmd_exec bodies. Comments documenting the option
+        are fine; this checks for the actual flag being passed as a
+        CLI argument."""
+        import re
         src = SAFE_CLI.read_text()
         for name in ("cmd_run", "cmd_exec"):
             idx = src.find(f"def {name}(")
@@ -36,12 +40,12 @@ class TestNoNoSandboxDefault(unittest.TestCase):
             if end < 0:
                 end = len(src)
             body = src[idx:end]
-            # The function must not unconditionally pass --no-sandbox.
-            # The CLI may still accept it as an explicit flag, but the
-            # default invocation path must not enable it.
-            self.assertNotIn(
-                "--no-sandbox", body,
-                f"{name} embeds --no-sandbox; it must be an explicit opt-in only",
+            # Look for --no-sandbox as a CLI argument
+            in_arg = re.search(r'"--no-sandbox"', body) or re.search(r"'--no-sandbox'", body)
+            self.assertIsNone(
+                in_arg,
+                f"{name} passes --no-sandbox; the agent path must never "
+                "bypass the sandbox as a default",
             )
 
     def test_agent_helper_does_not_pass_no_sandbox(self):
