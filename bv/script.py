@@ -33,7 +33,7 @@ class Script:
     content: str = ""                     # current content
     original_content: str = ""            # content at construction time
     backup_paths: list[Path] = field(default_factory=list)
-    fingerprint: str = ""
+    content_sha256: str = ""   # SHA256 of the bytes that were verified
     shebang: str = ""
     shebang_arg: str = ""
     is_bash: bool = False
@@ -44,7 +44,7 @@ class Script:
             if not self.content:
                 self.content = self.path.read_text(encoding="utf-8", errors="replace")
         self.original_content = self.content
-        self.fingerprint = self._hash(self.content)
+        self.content_sha256 = self._hash(self.content)
         self._detect_shebang()
 
     def _detect_shebang(self) -> None:
@@ -70,10 +70,32 @@ class Script:
         Does NOT auto-backup. Call backup() explicitly to capture state first.
         """
         self.content = new_content
-        self.fingerprint = self._hash(new_content)
+        self.content_sha256 = self._hash(new_content)
         self._detect_shebang()
         if self.path:
             self.path.write_text(new_content, encoding="utf-8")
+
+    @property
+    def fingerprint(self) -> str:
+        """Backwards-compatible alias for content_sha256."""
+        return self.content_sha256
+
+    def verify_integrity(self) -> bool:
+        """Re-read the file from disk and confirm the SHA256 still matches.
+
+        This is the P0 4 TOCTOU defense: a script file could be
+        modified between the time the verifier reads it and the time
+        the executor runs it. verify_integrity must be called by
+        every execution path between verify and exec, and the executor
+        must refuse to run if the SHA256 has changed.
+        """
+        if not self.path:
+            return True  # stdin-sourced scripts cannot be TOCTOU'd on disk
+        try:
+            current = self.path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return self._hash(current) == self.content_sha256
 
     def backup(self, label: str = "step") -> Path:
         """Copy current content to a timestamped backup directory."""
