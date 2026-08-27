@@ -68,6 +68,32 @@ from .semantics import (
 )
 from .validator import ValidationResult, validate_static
 
+# New modules (added in the bash-verify / self-healing follow-up).
+from .nested_lang import (
+    NestedBoundary,
+    detect_boundaries,
+    find_max_risk as _find_max_risk,
+    is_quoting_hell,
+)
+from .root_cause import (
+    RootCauseDiagnostic,
+    render_root_cause_report,
+)
+from .toctou import (
+    FileSnapshot,
+    RepairLoopGuard,
+    verify_unchanged_since,
+)
+from .fuzzer import (
+    STANDARD_CASES,
+    FuzzCase,
+    FuzzResult,
+    random_adversarial,
+    run_all as run_fuzzer,
+    run_case,
+    write_corpus,
+)
+
 
 __all__ = [
     "analyze",
@@ -76,6 +102,22 @@ __all__ = [
     "apply_repair",
     "render_text",
     "render_json",
+    "analyze_full",
+    "root_cause_report",
+    "is_quoting_hell",
+    "detect_boundaries",
+    "NestedBoundary",
+    "RootCauseDiagnostic",
+    "FileSnapshot",
+    "RepairLoopGuard",
+    "verify_unchanged_since",
+    "STANDARD_CASES",
+    "FuzzCase",
+    "FuzzResult",
+    "run_fuzzer",
+    "run_case",
+    "random_adversarial",
+    "write_corpus",
     "ContextKind",
     "Expansion",
     "ExpansionKind",
@@ -255,3 +297,43 @@ def render_text(findings: Sequence[FindingView]) -> str:
 
 def render_json(findings: Sequence[FindingView]) -> dict:
     return render_findings_json(findings)
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline (added in the bash-verify follow-up)
+# ---------------------------------------------------------------------------
+
+
+def analyze_full(source: str):
+    """Run the full pipeline and return (words, findings, boundaries).
+
+    Use this when you want both the tokenized AST view AND the root-cause
+    diagnostic view in a single call.
+    """
+    words = analyze_with_intent(source)
+    findings = find_findings(source)
+    boundaries = detect_boundaries(words)
+    return words, findings, boundaries
+
+
+def root_cause_report(source: str, *, file_path: Optional[str] = None) -> dict:
+    """Return the structured root-cause JSON output (spec section 19).
+
+    Shape:
+        {
+          "schema_version": 1,
+          "type": "safe-cli.bash-verify",
+          "file": "...",
+          "source_sha256": "...",
+          "status": "PASS" | "REPAIRABLE" | "REVIEW_REQUIRED" | "QUOTING_HELL_REFUSED",
+          "diagnostics": [
+            {"type": "...", "root_cause": "...", "location": {...}, ...},
+            ...
+          ],
+          "summary": {...}
+        }
+    """
+    _, findings, boundaries = analyze_full(source)
+    return render_root_cause_report(
+        findings, boundaries, file_path=file_path, source=source
+    )

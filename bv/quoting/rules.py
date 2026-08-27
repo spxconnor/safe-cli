@@ -162,7 +162,22 @@ def _in_dynamic_eval(word: ShellWord) -> bool:
 
 def _cardinality_ambiguous(word: ShellWord) -> bool:
     """True if the repair candidate WOULD change argument cardinality
-    for a word whose intent we cannot determine."""
+    for a word whose intent we cannot determine.
+
+    We do NOT flag words on the RHS of an assignment: in assignment
+    context word splitting and pathname expansion do not occur, so
+    argument cardinality is already irrelevant and the user's intent
+    is unaffected by quoting.
+    """
+    if in_assignment_rhs(word):
+        return False
+    if word.context_kind in (
+        ContextKind.REDIRECT_TARGET,
+        ContextKind.REDIRECT_SOURCE,
+    ):
+        return False
+    if word.context_kind == ContextKind.TEST_DOUBLE_BRACKET:
+        return False
     if word.intent in (Intent.LIST, Intent.ARRAY, Intent.UNKNOWN):
         # We don't know if the user wants scalar or list.
         return True
