@@ -76,6 +76,7 @@ class ExecutionBroker:
         # passed as stdin to the container; the host's bash binary
         # is not invoked.
         sb = DockerSandbox(self.config)
+        cleanup_errors: list[str] = []  # P0-4
         start_ms = int(time.time() * 1000)
         try:
             with sb.run_script(
