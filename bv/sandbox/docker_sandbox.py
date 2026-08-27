@@ -76,8 +76,9 @@ class DockerSandbox:
                 info = _json.loads(proc.stdout or "[]")
                 if info and isinstance(info, list):
                     self._resolved_image_id = info[0].get("Id", "")
-            except Exception:
-                pass
+            except Exception as e:
+                cleanup_errors.append(f"cleanup: {e!r}")
+
             return
         pull = subprocess.run(
             [self.docker_bin, "pull", self.image],
