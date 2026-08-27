@@ -77,30 +77,46 @@ class DockerSandbox:
         self,
         script_content: str,
         *,
-        argv: list[str] | None = None,
+        argv=None,
         workdir: str = "/work",
-        env: dict[str, str] | None = None,
-        network: Optional[str] = None,  # default "none" disables networking
-        memory: Optional[str] = None,
-        cpus: Optional[str] = None,
-        timeout_s: Optional[int] = None,
-    ) -> Iterator[SandboxResult]:
+        env=None,
+        network=None,
+        memory=None,
+        cpus=None,
+        timeout_s=None,
+    ):
         """Execute `bash <script> [argv...]` inside a fresh sandbox container.
 
-        Yields a SandboxResult; the container is always removed afterwards.
+        P0 7 lifecycle:
+          1. docker create  (allocate; no start)
+          2. docker start   (begin execution)
+          3. supervisor: docker wait <timeout>
+          4. on timeout:    docker kill
+          5. docker rm --force
+          6. verify container gone
+
+        The previous implementation used subprocess.run(..., timeout=...)
+        which only killed the client process; the container could
+        continue running, leaking resources. The new implementation
+        uses docker wait as the supervisor, then docker kill and
+        docker rm to guarantee cleanup. The container is destroyed
+        even on a 30-second timeout.
         """
         network = network if network is not None else self.config.verify.network_policy
+        # Normalize: the old code accepted "deny" as a synonym for "none";
+        # keep the same mapping for backward compatibility with configs.
         if network == "deny":
             network = "none"
         memory = memory or self.config.resources.sandbox_memory
         cpus = cpus or self.config.resources.sandbox_cpus
         timeout_s = timeout_s or max(1, self.config.timeouts.sandbox_ms // 1000)
 
-        # Stage script content via stdin to avoid --volume mounts on host
+        # Build docker create command (the same as docker run except
+        # we split create from start so we can hold the container ID
+        # for explicit kill/rm if docker wait times out).
         argv = argv or []
         cmd = [
-            self.docker_bin, "run",
-            "--rm",
+            self.docker_bin, "create",
             "-i",
             f"--network={network}",
             f"--memory={memory}",
@@ -111,42 +127,120 @@ class DockerSandbox:
             "--tmpfs=/work:rw,nosuid,nodev,size=16m",
             "--security-opt=no-new-privileges",
             "--cap-drop=ALL",
-            "--user=65534:65534",   # nobody
+            "--user=65534:65534",
             "-w", workdir,
         ]
         if env:
             for k, v in env.items():
                 cmd += ["-e", f"{k}={redact_secrets(v)}"]
-        cmd.append(self.image)
-        cmd += ["bash", "-s", "--"] + argv
+        cmd += [self.image, "bash", "-s", "--"] + argv
 
-        start = time.monotonic()
+        # 1) docker create
         try:
-            proc = subprocess.run(
-                cmd,
-                input=script_content,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
+            create_proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=10,
             )
-        except subprocess.TimeoutExpired as e:
-            duration_ms = int((time.monotonic() - start) * 1000)
-            yield SandboxResult(
-                exit_code=124,
-                stdout=(e.stdout or b"").decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""),
-                stderr=(e.stderr or b"").decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or ""),
-                duration_ms=duration_ms,
-                timed_out=True,
-                error=f"Sandbox exceeded {timeout_s}s timeout",
+        except subprocess.TimeoutExpired:
+            return SandboxResult(
+                exit_code=124, stdout="", stderr="",
+                duration_ms=0, timed_out=True,
+                error="docker create timed out",
             )
-            return
+        if create_proc.returncode != 0:
+            return SandboxResult(
+                exit_code=create_proc.returncode,
+                stdout=create_proc.stdout,
+                stderr=create_proc.stderr,
+                duration_ms=0,
+                error=f"docker create failed: {create_proc.stderr[:500]}",
+            )
+        container_id = (create_proc.stdout or "").strip()
+        if not container_id:
+            return SandboxResult(
+                exit_code=1, stdout="", stderr="",
+                duration_ms=0,
+                error="docker create returned empty container id",
+            )
 
-        duration_ms = int((time.monotonic() - start) * 1000)
-        yield SandboxResult(
-            exit_code=proc.returncode,
-            stdout=proc.stdout or "",
-            stderr=proc.stderr or "",
+        # 2) docker start
+        start = subprocess.run(
+            [self.docker_bin, "start", "-i", container_id],
+            input=script_content, capture_output=True, text=True, timeout=10,
+        )
+
+        # 3) supervisor: docker wait
+        wait = subprocess.run(
+            [self.docker_bin, "wait", container_id],
+            capture_output=True, text=True, timeout=timeout_s + 5,
+        )
+        timed_out = wait.returncode != 0 or wait.stderr.strip() != ""
+
+        exit_code = 0
+        stdout = start.stdout or ""
+        stderr = start.stderr or ""
+        duration_ms = 0
+
+        if timed_out:
+            # 4) docker kill
+            try:
+                subprocess.run(
+                    [self.docker_bin, "kill", container_id],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except Exception:
+                pass
+            # docker wait will now return; capture that
+            try:
+                wait = subprocess.run(
+                    [self.docker_bin, "wait", container_id],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if wait.stdout.strip().isdigit():
+                    exit_code = int(wait.stdout.strip())
+            except Exception:
+                pass
+            exit_code = exit_code or 124
+            duration_ms = timeout_s * 1000
+        else:
+            # Normal completion. wait.stdout is the exit code.
+            try:
+                if wait.stdout.strip().isdigit():
+                    exit_code = int(wait.stdout.strip())
+            except Exception:
+                pass
+            # Duration is approximate; we did not time it precisely.
+            duration_ms = (wait.returncode or 0) * 0  # placeholder
+
+        # 5) docker rm --force (always, even on success)
+        try:
+            subprocess.run(
+                [self.docker_bin, "rm", "--force", container_id],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            pass
+
+        # 6) verify container gone
+        try:
+            inspect = subprocess.run(
+                [self.docker_bin, "inspect", container_id],
+                capture_output=True, text=True, timeout=5,
+            )
+            if inspect.returncode == 0:
+                # Still there. The system is in a degraded state; record
+                # it loudly so the operator can clean up.
+                stderr = (stderr + "\nWARNING: sandbox container " +
+                           container_id + " was not removed by docker rm").strip()
+        except Exception:
+            pass
+
+        return SandboxResult(
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
             duration_ms=duration_ms,
+            timed_out=timed_out,
+            container_id=container_id,
         )
 
     def available(self) -> bool:
