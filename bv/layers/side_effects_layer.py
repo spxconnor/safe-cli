@@ -47,19 +47,34 @@ class SideEffectsLayer(Layer):
 
         # Build a wrapper that:
         #   1. snapshots /tmp + /work contents
-        #   2. runs the script
+        #   2. runs the staged script from /work/script.sh
         #   3. snapshots again
-        #   4. prints BV_BEFORE / BV_AFTER JSON lines
-        target = script.path.as_posix() if script.path else "/dev/stdin"
-        wrapper = textwrap.dedent(f"""
+        #   4. prints BV_BEFORE / BV_AFTER / BV_DONE / BV_RC
+        #
+        # P0 6: we no longer pass a host path. The script is staged
+        # into the sandbox at /work/script.sh via the docker cp-style
+        # volume mount, or via stdin at container start. Either way,
+        # the container has no visibility into any host file path.
+        wrapper = textwrap.dedent("""\
             #!/usr/bin/env bash
-            snapshot() {{
+            set +e
+            snapshot() {
                 find /tmp /work -xdev -type f 2>/dev/null | sort
-            }}
+            }
             echo "BV_BEFORE"
             snapshot
-            TARGET={target!r}
-            bash "$TARGET" >/dev/null 2>&1 || true
+            # The target script is at /work/script.sh, mounted by the
+            # sandbox. We capture its real exit code, stdout, and
+            # stderr so that a failure is never silently swallowed.
+            bash /work/script.sh >/work/_stdout 2>/work/_stderr
+            rc=$?
+            echo "BV_RC=$rc"
+            echo "BV_STDOUT_START"
+            cat /work/_stdout
+            echo "BV_STDOUT_END"
+            echo "BV_STDERR_START"
+            cat /work/_stderr
+            echo "BV_STDERR_END"
             echo "BV_AFTER"
             snapshot
             echo "BV_DONE"
