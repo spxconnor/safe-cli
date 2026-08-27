@@ -149,13 +149,13 @@ class TestP06NoSandboxCannotProduceVerified(unittest.TestCase):
         src = Path("/opt/safe-cli-repo/bin/safe_cli.py").read_text()
         # After running bash_verify, the code must parse the status
         # and only proceed when it is exactly "verified"
-        self.assertIn("_status != "verified"", src)
+        self.assertIn('_status != "verified"', src)
         self.assertIn("verification status is", src)
 
     def test_safe_cli_exec_requires_verified_status_in_source(self):
         from pathlib import Path
         src = Path("/opt/safe-cli-repo/bin/safe_cli.py").read_text()
         # Same check must apply to cmd_exec
-        self.assertIn("_status != "verified"", src)
+        self.assertIn('_status != "verified"', src)
         # Both cmd_run and cmd_exec must have the check
-        self.assertGreaterEqual(src.count("_status != "verified""), 2)
+        self.assertGreaterEqual(src.count('_status != "verified"'), 2)
