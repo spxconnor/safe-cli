@@ -1,3 +1,4 @@
+import os
 """Regression tests for the P1 fixes in this round."""
 import sys
 import unittest
