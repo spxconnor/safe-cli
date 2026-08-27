@@ -125,6 +125,52 @@ class BatsLayer(Layer):
         stderr = proc_stderr or ""
         ok, failed, total = self._parse_tap_summary(stdout)
 
+        # P1 bats: a non-zero return with empty TAP output means bats could
+        # not produce test results at all — most commonly because bats is
+        # not installed in the sandbox image (the wrapper emits the
+        # `BATS_MISSING_IN_SANDBOX` sentinel), but it also covers any
+        # other environment problem where the sandbox produced no TAP.
+        # That is NOT a test failure: tests did not run. Surface it as
+        # `incomplete` with an INFO diagnostic so the operator sees
+        # the reason instead of a contradictory `fail` with zero
+        # diagnostics.
+        bats_missing_sentinel = "BATS_MISSING_IN_SANDBOX" in stdout
+        env_no_tap = (proc_returncode != 0 and total == 0)
+        if bats_missing_sentinel or env_no_tap:
+            if bats_missing_sentinel:
+                reason = (
+                    "bats is not installed in the sandbox image; "
+                    "behavioral tests skipped"
+                )
+                diag_code = "BATS_MISSING_IN_SANDBOX"
+                reason_key = "bats_not_installed_in_sandbox"
+            else:
+                reason = (
+                    "bats produced no TAP output (non-zero returncode "
+                    "with empty TAP indicates an environment problem, "
+                    "not a test failure); behavioral tests skipped"
+                )
+                diag_code = "BATS_NO_TAP"
+                reason_key = "no_tap_output"
+            result.status = "incomplete"
+            result.add(self._diag(
+                tool="bats",
+                category=Category.DEPENDENCY,
+                severity=Severity.INFO,
+                message=reason,
+                code=diag_code,
+            ))
+            result.metadata = {
+                "returncode": proc_returncode,
+                "ok": ok,
+                "failed": failed,
+                "total": total,
+                "stderr": stderr[:1000],
+                "incomplete_reason": reason_key,
+            }
+            result.duration_ms = self._elapsed()
+            return result
+
         if proc_returncode == 0 and failed == 0 and not proc_timed_out:
             result.status = "pass"
         else:

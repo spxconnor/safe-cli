@@ -67,6 +67,27 @@ class BashNLayer(Layer):
                     raw=line,
                     suggested_action="fix_syntax",
                 ))
+            # Defensive fallback: bash -n can exit non-zero with no stderr
+            # (e.g. very old bash, locale issues, container with broken
+            # stdout). Without this fallback the layer reports
+            # "fail 0 diagnostic(s)" which contradicts the fail status.
+            # Mirror the pattern from tree_sitter_layer to ensure at least
+            # one ERROR diagnostic exists whenever we claim failure.
+            if not any(d.severity == Severity.ERROR for d in result.diagnostics):
+                result.add(self._diag(
+                    tool="bash",
+                    category=Category.SYNTAX,
+                    severity=Severity.ERROR,
+                    file=script.path.as_posix() if script.path else "<stdin>",
+                    line=0,
+                    message=(
+                        f"bash -n exited with code {proc.returncode} but "
+                        "produced no stderr; presumed syntax error."
+                    ),
+                    code="BASH_SYNTAX",
+                    raw=(stderr or "")[:500],
+                    suggested_action="fix_syntax",
+                ))
 
         result.metadata = {"returncode": proc.returncode, "stderr": stderr}
         result.duration_ms = self._elapsed()
