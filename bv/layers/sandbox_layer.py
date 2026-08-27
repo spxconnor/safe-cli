@@ -89,14 +89,19 @@ class SandboxLayer(Layer):
 
     @staticmethod
     def _wrap_with_trace(content: str) -> str:
-        return (
-            "#!/usr/bin/env bash\n"
-            "set -o pipefail\n"
-            "trap 'echo \"[trace] EXIT_LINE=$LINENO EXIT_STATUS=$?\" >&2' EXIT\n"
-            "set -x\n"
-            + content
-            + "\n"
-        )
+        # P0-3 (round 2): stop mutating target shell semantics.
+        # The previous wrapper injected `set -o pipefail` and `set -x`
+        # which changed Bash pipeline status semantics (false negatives /
+        # false positives on sandbox vs host) and could leak secrets
+        # through xtrace output before our redactor ran.
+        #
+        # The safe-cli invariant is: execute the exact verified
+        # artifact bytes inside the sandbox. No mutations.
+        #
+        # If explicit tracing is required, callers can wrap the
+        # artifact themselves before passing it in; that is a
+        # user-visible decision, not a default behavior.
+        return content
 
     def _diag(self, **kwargs):
         from .base import diagnostic_from_message

@@ -73,3 +73,40 @@ class TestP02BatsBase64Transport(unittest.TestCase):
         self.assertNotIn("cat > /work/verify.bats <<'__BV_HEREDOC2__'", text)
         # But base64 transport must be present
         self.assertIn("base64 -d", text)
+
+
+class TestP03SandboxNoShellMutation(unittest.TestCase):
+    """The sandbox wrapper function must execute the exact artifact
+    bytes. It must not inject `set -o pipefail`, `set -x`, or any
+    other shell option that changes the program semantics."""
+
+    def test_wrap_with_trace_is_now_identity(self):
+        from pathlib import Path
+        from bv.layers.sandbox_layer import SandboxLayer
+        # Call the static method directly with sample content
+        sample = "echo hello\n"
+        result = SandboxLayer._wrap_with_trace(sample)
+        # Must equal the input unchanged - no pipefail, no set -x,
+        # no trap, nothing injected.
+        self.assertEqual(result, sample)
+
+    def test_sandbox_layer_file_does_not_inject_pipefail_in_code(self):
+        # The wrapping helper body must not contain pipefail or set -x
+        # as runtime statements. We extract only the function body to
+        # allow the comments to mention these names.
+        from pathlib import Path
+        import re
+        src = Path("/opt/safe-cli-repo/bv/layers/sandbox_layer.py").read_text()
+        # Find _wrap_with_trace definition and the next def at the
+        # same indentation. The function is short so this is reliable.
+        idx = src.find("def _wrap_with_trace(")
+        self.assertGreater(idx, 0, "_wrap_with_trace function not found")
+        # Find the next def at the same indent (4 spaces)
+        m2 = re.search(r"\n    def ", src[idx + 1:])
+        end = (idx + 1 + m2.start()) if m2 else len(src)
+        body = src[idx:end]
+        # Function body must not contain active injection statements
+        self.assertNotIn("set -o pipefail", body)
+        self.assertNotIn("set -x", body)
+        # And the body must be effectively identity (return content)
+        self.assertIn("return content", body)
