@@ -93,7 +93,8 @@ class RepairEngine:
         initial_diagnostics = self._flatten(layer_results)
         # If no diagnostics above threshold, nothing to repair
         threshold = Severity(self.config.verify.severity_threshold)
-        blocking = [d for d in initial_diagnostics if Severity(d.severity).value >= threshold.value]
+        # P0 5 fix: use the ordinal map; never compare severity strings.
+        blocking = [d for d in initial_diagnostics if Severity.meets_threshold(d.severity, threshold)]
         if not blocking:
             self.report.final_diagnostics = initial_diagnostics
             self.report.self_healed = False
@@ -144,7 +145,7 @@ class RepairEngine:
             # Re-run pipeline
             new_results = self.run_pipeline(script, context=context)
             new_diagnostics = self._flatten(new_results)
-            new_blocking = [n for n in new_diagnostics if Severity(n.severity).value >= threshold.value]
+            new_blocking = [n for n in new_diagnostics if Severity.meets_threshold(n.severity, threshold)]
             attempt_rec = RepairAttempt(
                 attempt_number=attempt,
                 diagnostics_before=list(blocking),

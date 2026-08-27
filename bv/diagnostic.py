@@ -14,14 +14,33 @@ from typing import Any, Optional
 
 
 class Severity(str, enum.Enum):
-    ERROR = "error"
-    WARNING = "warning"
-    INFO = "info"
     STYLE = "style"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
 
+    @classmethod
+    def meets_threshold(cls, actual, threshold):
+        """True if `actual` is at least as severe as `threshold`.
 
-# Severity ordering for threshold checks (higher = more severe)
-SEVERITY_ORDER = {Severity.STYLE: 0, Severity.INFO: 1, Severity.WARNING: 2, Severity.ERROR: 3}
+        Uses an ordinal map. Higher integer = more severe.
+
+        The dict is built locally inside this method on every call.
+        We cannot store it as a class attribute because `enum.Enum`
+        treats every class-body assignment as an enum member, so a
+        dict at class scope becomes a member (and stops being a dict).
+        We cannot store it as a class-level attribute set via `setattr`
+        for the same reason. A 4-entry dict literal inside the method
+        is fast enough and completely avoids the trap.
+
+        NEVER compare severity strings directly with `<` or `>=`;
+        that compares lexically and gives wrong answers (e.g.
+        "error" < "warning").
+        """
+        _order = {s.value: i for i, s in enumerate(
+            [cls.STYLE, cls.INFO, cls.WARNING, cls.ERROR]
+        )}
+        return _order[actual.value] >= _order[threshold.value]
 
 
 class Category(str, enum.Enum):
@@ -162,8 +181,9 @@ class LayerResult:
         return [d for d in self.diagnostics if d.severity == Severity.WARNING]
 
     def above_threshold(self, threshold: Severity) -> list[Diagnostic]:
-        threshold_order = SEVERITY_ORDER[threshold]
-        return [d for d in self.diagnostics if SEVERITY_ORDER[d.severity] >= threshold_order]
+        # Use the ordinal comparison on Severity, never compare
+        # severity strings directly. (P0 5 fix.)
+        return [d for d in self.diagnostics if Severity.meets_threshold(d.severity, threshold)]
 
     def to_dict(self) -> dict[str, Any]:
         return {
