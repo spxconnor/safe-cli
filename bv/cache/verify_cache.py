@@ -5,6 +5,7 @@ a cache key. Caches only STATIC analysis results (which are deterministic
 given the same inputs); runtime / sandbox results are NOT cached.
 """
 from __future__ import annotations
+import sys
 
 import hashlib
 import json
