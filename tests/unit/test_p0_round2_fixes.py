@@ -105,8 +105,35 @@ class TestP03SandboxNoShellMutation(unittest.TestCase):
         m2 = re.search(r"\n    def ", src[idx + 1:])
         end = (idx + 1 + m2.start()) if m2 else len(src)
         body = src[idx:end]
-        # Function body must not contain active injection statements
-        self.assertNotIn("set -o pipefail", body)
-        self.assertNotIn("set -x", body)
+        # Strip comments so the test does not flag documentation
+        # that mentions the removed constructs.
+        body_no_comments = "\n".join(
+            line for line in body.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        )
+        self.assertNotIn("set -o pipefail", body_no_comments)
+        self.assertNotIn("set -x", body_no_comments)
         # And the body must be effectively identity (return content)
         self.assertIn("return content", body)
+
+
+class TestP04SandboxCleanupFailuresSurfaced(unittest.TestCase):
+    """SandboxResult must carry a list of cleanup failures. The old
+    behavior silently swallowed docker kill / wait / rm / inspect
+    exceptions with `except Exception: pass`."""
+
+    def test_sandbox_result_has_cleanup_failures_field(self):
+        import dataclasses
+        from bv.sandbox.docker_sandbox import SandboxResult
+        fields = {f.name for f in dataclasses.fields(SandboxResult)}
+        self.assertIn("cleanup_failures", fields)
+
+    def test_silent_except_pass_is_gone_in_run_script(self):
+        from pathlib import Path
+        import re
+        src = Path("/opt/safe-cli-repo/bv/sandbox/docker_sandbox.py").read_text()
+        # The run_script method body must not contain bare
+        # `except Exception: pass`. Allow `except Exception as e:` because
+        # the new code captures the failure into result["cleanup_failures"].
+        bad = re.findall(r"except Exception:\s*\n\s*pass", src)
+        self.assertEqual(len(bad), 0, f"silent excepts still present: {bad}")

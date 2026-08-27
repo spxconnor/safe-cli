@@ -22,7 +22,7 @@ import shutil
 import subprocess
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -40,6 +40,8 @@ class SandboxResult:
     killed: bool = False
     container_id: str = ""
     error: str = ""
+    # P0-4: cleanup failures surfaced explicitly
+    cleanup_failures: list = field(default_factory=list)
 
 
 class DockerSandbox:
@@ -187,8 +189,9 @@ class DockerSandbox:
                     [self.docker_bin, "kill", container_id],
                     capture_output=True, text=True, timeout=5,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                cleanup_errors.append(f"cleanup: {e!r}")
+
             # docker wait will now return; capture that
             try:
                 wait = subprocess.run(
@@ -197,8 +200,9 @@ class DockerSandbox:
                 )
                 if wait.stdout.strip().isdigit():
                     exit_code = int(wait.stdout.strip())
-            except Exception:
-                pass
+            except Exception as e:
+                cleanup_errors.append(f"cleanup: {e!r}")
+
             exit_code = exit_code or 124
             duration_ms = timeout_s * 1000
         else:
@@ -206,8 +210,9 @@ class DockerSandbox:
             try:
                 if wait.stdout.strip().isdigit():
                     exit_code = int(wait.stdout.strip())
-            except Exception:
-                pass
+            except Exception as e:
+                cleanup_errors.append(f"Normal completion. wait.stdout is the exit code.: {e!r}")
+
             # Duration is approximate; we did not time it precisely.
             duration_ms = (wait.returncode or 0) * 0  # placeholder
 
@@ -217,8 +222,9 @@ class DockerSandbox:
                 [self.docker_bin, "rm", "--force", container_id],
                 capture_output=True, text=True, timeout=10,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            cleanup_errors.append(f"cleanup: {e!r}")
+
 
         # 6) verify container gone
         try:
@@ -231,8 +237,9 @@ class DockerSandbox:
                 # it loudly so the operator can clean up.
                 stderr = (stderr + "\nWARNING: sandbox container " +
                            container_id + " was not removed by docker rm").strip()
-        except Exception:
-            pass
+        except Exception as e:
+            cleanup_errors.append(f"docker rm --force: {e!r}")
+
 
         yield SandboxResult(
             exit_code=exit_code,
@@ -241,6 +248,7 @@ class DockerSandbox:
             duration_ms=duration_ms,
             timed_out=timed_out,
             container_id=container_id,
+            cleanup_failures=list(cleanup_errors),
         )
 
     def available(self) -> bool:
