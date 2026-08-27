@@ -16,7 +16,15 @@ severity_threshold = "warning"
 # Network policy during sandbox execution: "deny" | "allow"
 network_policy = "none"
 # Default sandbox runtime image (Ubuntu 22.04 + bash + coreutils + bats)
+# P1-12: pin the image by digest for reproducibility. The tag is
+# kept for ergonomics; the digest is used for the actual pull and is
+# recorded in the verification report.
 sandbox_image = "bash:5.1"
+# sha256 of the bash:5.1 image (recorded at install time on this host).
+# The Docker runner will compare this against `docker inspect
+# <image> --format '{{.Id}}'` and emit a diagnostic if the local
+# image has drifted.
+sandbox_image_digest = "sha256:7e080cfd8aad6fbd289cf4a25fe62caf56306c9384478e9643d0970493e98bfc"
 
 [timeouts]
 tree_sitter_ms = 5000

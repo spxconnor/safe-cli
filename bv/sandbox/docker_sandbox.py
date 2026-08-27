@@ -50,6 +50,12 @@ class DockerSandbox:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.image = config.verify.sandbox_image
+        # P1-12: expected digest from config (if set). The actual local
+        # image id is recorded at run time into self._resolved_image_id.
+        self.expected_image_digest = getattr(
+            config.verify, "sandbox_image_digest", ""
+        )
+        self._resolved_image_id: str = ""
         self.docker_bin = config.tools.docker
         if not Path(self.docker_bin).exists():
             raise RuntimeError(f"docker binary not found at {self.docker_bin}")
@@ -64,6 +70,14 @@ class DockerSandbox:
             text=True,
         )
         if proc.returncode == 0:
+            # P1-12: record the actual local image ID for the report
+            try:
+                import json as _json
+                info = _json.loads(proc.stdout or "[]")
+                if info and isinstance(info, list):
+                    self._resolved_image_id = info[0].get("Id", "")
+            except Exception:
+                pass
             return
         pull = subprocess.run(
             [self.docker_bin, "pull", self.image],
@@ -73,6 +87,15 @@ class DockerSandbox:
         )
         if pull.returncode != 0:
             raise RuntimeError(f"docker pull failed for {self.image}: {pull.stderr}")
+        # P1-12: after pull, capture the resolved image id
+        try:
+            r = subprocess.run(
+                [self.docker_bin, "image", "inspect", self.image, "--format", "{{.Id}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self._resolved_image_id = (r.stdout or "").strip()
+        except Exception:
+            self._resolved_image_id = ""
 
     @contextmanager
     def run_script(
@@ -249,6 +272,11 @@ class DockerSandbox:
             timed_out=timed_out,
             container_id=container_id,
             cleanup_failures=list(cleanup_errors),
+            image_id=getattr(self, "_resolved_image_id", ""),
+            image_digest_matched=(
+                bool(self.expected_image_digest)
+                and getattr(self, "_resolved_image_id", "") == self.expected_image_digest
+            ) if self.expected_image_digest else True,
         )
 
     def available(self) -> bool:
