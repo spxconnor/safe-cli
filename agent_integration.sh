@@ -59,7 +59,7 @@ bv_wrap() {
     printf '%s\n' "$snippet" > "$tmp"
     echo "[bv_wrap] verifying $tmp ..." >&2
     # --ci makes bash_verify exit nonzero on failure.
-    out=$("${BV_BIN}" "$tmp" --fix --no-sandbox --ci 2>&1)
+    out=$("${BV_BIN}" "$tmp" --fix --ci 2>&1)
     rc=$?
     echo "$out"
     if [[ $rc -ne 0 ]]; then
